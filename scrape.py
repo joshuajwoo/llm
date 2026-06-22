@@ -4,10 +4,10 @@ import trafilatura
 import os
 import re
 
-def scrape_text(url, output_file, include_math=True):    
+def scrape_text(url, output_file=None, include_math=True):    
     # 1. Send an HTTP GET request to the URL
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     response = requests.get(url, headers=headers)
     response.raise_for_status()
@@ -111,20 +111,18 @@ def scrape_text(url, output_file, include_math=True):
     text_content = text_content.strip()
     
     # 7. Save the text to our target file
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(text_content)
+    if output_file:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         
-    print(f"Saved {len(text_content)} characters to {output_file}")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(text_content)
+            
+        print(f"Saved {len(text_content)} characters to {output_file}")
     return text_content
 
 def scrape_text_to_string(url, include_math=True):
     """Scrape text from a URL and return it as a string without saving to a file."""
-    # Reuse scrape_text but write to a temp path, then return the text
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=True) as tmp:
-        return scrape_text(url, tmp.name, include_math)
+    return scrape_text(url, None, include_math)
 
 def url_to_filename(url):
     from urllib.parse import urlparse
@@ -140,7 +138,6 @@ if __name__ == '__main__':
         "https://en.wikipedia.org/wiki/Neural_network_(machine_learning)",
         "https://en.wikipedia.org/wiki/Natural_language_processing",
         "https://en.wikipedia.org/wiki/Deep_learning",
-        "https://nypost.com/2026/06/05/us-news/karmelo-anthony-asked-to-leave-15-times-before-fatal-stabbing-witness-says/",
     ]
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
