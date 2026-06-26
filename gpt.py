@@ -1,3 +1,30 @@
+# Pre-LN decoder-only transformer, ~10.8M params, char-level vocab=65
+#
+# Embedding:
+#   token embedding:    (B, T) → (B, T, 384)
+#   position embedding: (T) → (T, 384)
+#   sum both → (B, T, 384)
+#
+# 6 Transformer Blocks, each:
+#   LayerNorm (B, T, 384) → (B, T, 384)
+#   Multi-Head Attention (6 heads, head_dim=64):
+#     Q, K, V projections: (B, T, 384) → (B, T, 64) per head
+#     attention scores:     (B, T, 64) @ (B, 64, T) → (B, T, T), scaled by 1/√64, causal masked
+#     weighted values:      (B, T, T) @ (B, T, 64) → (B, T, 64) per head
+#     concat all heads:     (B, T, 64) × 6 → (B, T, 384)
+#     output projection:    (B, T, 384) → (B, T, 384)
+#     + residual
+#   LayerNorm (B, T, 384) → (B, T, 384)
+#   MLP:
+#     up projection:   (B, T, 384) → (B, T, 1536), ReLU
+#     down projection: (B, T, 1536) → (B, T, 384)
+#     + residual
+#
+# Unembedding:
+#   LayerNorm (B, T, 384) → (B, T, 384)
+#   linear projection: (B, T, 384) → (B, T, 65) → logits
+
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -23,10 +50,10 @@ torch.manual_seed(1337)
 with open('data/input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
-# here are all the unique characters that occur in this text
+# all the unique characters that occur in this text
 chars = sorted(list(set(text)))
 vocab_size = len(chars)
-# create a mapping from characters to integers
+# mapping from characters to integers
 stoi = { ch:i for i,ch in enumerate(chars) }
 itos = { i:ch for i,ch in enumerate(chars) }
 encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
