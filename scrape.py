@@ -134,10 +134,50 @@ def url_to_filename(url):
 if __name__ == '__main__':
     urls = [
         "https://en.wikipedia.org/wiki/Large_language_model",
+        "https://en.wikipedia.org/wiki/Natural_language_processing",
+        "https://en.wikipedia.org/wiki/GPT-4",
+        "https://en.wikipedia.org/wiki/BERT_(language_model)",
+        "https://en.wikipedia.org/wiki/Word_embedding",
+        "https://en.wikipedia.org/wiki/Word2vec",
+        "https://en.wikipedia.org/wiki/Tokenization_(lexical_analysis)",
+        "https://en.wikipedia.org/wiki/Byte_pair_encoding",
+        "https://en.wikipedia.org/wiki/Machine_translation",
+        "https://en.wikipedia.org/wiki/Text_mining",
+        "https://en.wikipedia.org/wiki/Sentiment_analysis",
+
         "https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)",
         "https://en.wikipedia.org/wiki/Neural_network_(machine_learning)",
-        "https://en.wikipedia.org/wiki/Natural_language_processing",
         "https://en.wikipedia.org/wiki/Deep_learning",
+        "https://en.wikipedia.org/wiki/Recurrent_neural_network",
+        "https://en.wikipedia.org/wiki/Long_short-term_memory",
+        "https://en.wikipedia.org/wiki/Convolutional_neural_network",
+        "https://en.wikipedia.org/wiki/Generative_adversarial_network",
+        "https://en.wikipedia.org/wiki/Autoencoder",
+        "https://en.wikipedia.org/wiki/Attention_(machine_learning)",
+        "https://en.wikipedia.org/wiki/Mixture_of_experts",
+
+        "https://en.wikipedia.org/wiki/Machine_learning",
+        "https://en.wikipedia.org/wiki/Backpropagation",
+        "https://en.wikipedia.org/wiki/Gradient_descent",
+        "https://en.wikipedia.org/wiki/Reinforcement_learning",
+        "https://en.wikipedia.org/wiki/Supervised_learning",
+        "https://en.wikipedia.org/wiki/Unsupervised_learning",
+        "https://en.wikipedia.org/wiki/Overfitting",
+        "https://en.wikipedia.org/wiki/Regularization_(mathematics)",
+        "https://en.wikipedia.org/wiki/Loss_function",
+
+        "https://en.wikipedia.org/wiki/Linear_algebra",
+        "https://en.wikipedia.org/wiki/Matrix_(mathematics)",
+        "https://en.wikipedia.org/wiki/Probability_theory",
+        "https://en.wikipedia.org/wiki/Softmax_function",
+        "https://en.wikipedia.org/wiki/Cross-entropy",
+        "https://en.wikipedia.org/wiki/Bayesian_inference",
+        "https://en.wikipedia.org/wiki/Information_theory",
+
+        "https://en.wikipedia.org/wiki/Artificial_intelligence",
+        "https://en.wikipedia.org/wiki/Computer_vision",
+        "https://en.wikipedia.org/wiki/Speech_recognition",
+        "https://en.wikipedia.org/wiki/Computational_complexity_theory",
     ]
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -153,6 +193,7 @@ if __name__ == '__main__':
             try:
                 # Scrape to a temporary variable instead of a file
                 text = scrape_text_to_string(url, include_math=True)
+                print(len(text))
                 if text:
                     out.write(text)
                     out.write(f'\n{delimiter}\n')

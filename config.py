@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelConfig:
-    vocab_size: int = 16384 # Set dynamically after tokenizer training
+    vocab_size: int = 4096 # Set dynamically after tokenizer training
     block_size: int = 512 # Context window length
     n_embd: int = 768 # Embedding dimension
     n_head: int = 12 # Number of query attention heads

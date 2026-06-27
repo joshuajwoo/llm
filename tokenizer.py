@@ -1,11 +1,8 @@
 import os
 import re
 
-# We will use Python's built-in re module.
-# The standard GPT-4 regex pattern uses \p{L} which is not supported by 're'
-# We will use an equivalent robust pattern that works with standard 're'.
-# It splits on contractions, words, non-whitespace punctuation, and space sequences.
-GPT2_SPLIT_PATTERN = r"""'(?:[sdmt]|ll|ve|re)| ?\w+| ?[^\s\w]+|\s+(?!\S)|\s+"""
+# Splits on contractions ('s, 't, 'll, 've, 're), words, punctuation, and whitespace
+SPLIT_PATTERN = r"""'(?:[sdmt]|ll|ve|re)| ?\w+| ?[^\s\w]+|\s+(?!\S)|\s+"""
 
 def get_stats(ids, counts=None):
     """Count the frequency of consecutive pairs of integers."""
@@ -44,10 +41,9 @@ class BPETokenizer:
         for special, idx in self.special_tokens.items():
             self.vocab[idx] = special.encode("utf-8")
             
-        self.pattern = re.compile(GPT2_SPLIT_PATTERN, re.IGNORECASE)
+        self.pattern = re.compile(SPLIT_PATTERN, re.IGNORECASE)
 
     def train(self, text, verbose=False):
-        """Train the BPE tokenizer on the given text."""
         # Split text into chunks using regex
         text_chunks = re.findall(self.pattern, text)
         
@@ -75,8 +71,11 @@ class BPETokenizer:
             # Apply the merge to all chunks
             ids = [merge(chunk_ids, best_pair, new_idx) for chunk_ids in ids]
             
-            if verbose and i % 500 == 0:
-                print(f"Merge {i+1}/{self.num_merges}: {best_pair} -> {new_idx}")
+            if verbose:
+                t0 = self.vocab[best_pair[0]].decode("utf-8", errors="replace")
+                t1 = self.vocab[best_pair[1]].decode("utf-8", errors="replace")
+                merged = self.vocab[new_idx].decode("utf-8", errors="replace")
+                print(f"Merge {i+1}/{self.num_merges}: ({best_pair[0]}, {best_pair[1]}) -> {new_idx}  |  '{t0}' + '{t1}' = '{merged}'  (freq: {stats[best_pair]})")
 
     def encode(self, text, allowed_special=set()):
         """Encode a string into a list of token IDs."""
@@ -132,19 +131,14 @@ if __name__ == "__main__":
     from config import ModelConfig
     cfg = ModelConfig()
 
-    print("Loading data...")
     with open("data/input.txt", "r", encoding="utf-8") as f:
         text = f.read()
-        
-    print(f"Text length: {len(text)} chars")
-    print(f"Training tokenizer to vocab size {cfg.vocab_size}...")
+    print(f"{len(text)} chars")
     
     tokenizer = BPETokenizer(vocab_size=cfg.vocab_size)
     tokenizer.train(text, verbose=True)
     
-    # Save it
     tokenizer.save("data/tokenizer")
-    print("Tokenizer saved to data/tokenizer.merges")
     
     # Test round trip
     test_str = "The quick brown fox jumps over the lazy dog. Let's test math: $\\sum_{i=1}^n x_i$ ∇"
@@ -154,5 +148,5 @@ if __name__ == "__main__":
     print(f"\nOriginal: {test_str}")
     print(f"Encoded IDs: {ids}")
     print(f"Decoded:  {decoded}")
-    assert test_str == decoded, "Round trip failed!"
-    print("\n✅ Round trip test passed!")
+    assert test_str == decoded, "Fail"
+    print("\nPass")
