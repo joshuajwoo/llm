@@ -1,4 +1,5 @@
 .env
 __pycache__/
-data/tokenizer.merges
-data/input.txt
+data/*.merges
+data/*.txt
+*.md
