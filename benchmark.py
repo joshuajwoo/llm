@@ -63,62 +63,53 @@ def verify_early_exit(model, verify_ids, kv_caches, halt_threshold=0.5):
 
 
 @torch.no_grad()
-def speculative_generate(model, prompt, gen_len, device, use_early_exit=False):
-    """Self-speculative generation with KV cache and rollback.
+def baseline_generate(model, prompt, gen_len, halt_threshold=None):
+    """Standard token-by-token generation for baseline testing."""
+    kv_caches = model.create_kv_caches(batch_size=1, device=prompt.device)
+    idx = prompt.clone()
     
-    Draft:  Run 1 token through Stage 0 layers only (with cache, then rollback).
-    Verify: Run [last_token, draft_token] through full model (with cache).
-    Accept: Keep both cached entries + get a bonus token (2 tokens per step).
-    Reject: Rollback cache to before draft, keep the corrected token (1 token per step).
-    """
-    kv_caches = model.create_kv_caches(batch_size=1, device=device)
-    lps = model.layers_per_stage
-    
-    # Warm cache with prompt
-    logits, _, _ = model(prompt, kv_caches=kv_caches)
-    first_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
-    idx = torch.cat([prompt, first_token], dim=1)
-    generated = 1
-    accepted = 0
-    
-    while generated < gen_len:
-        cache_pos = kv_caches[0].seq_len
-        last_token = idx[:, -1:]
-        
-        # === DRAFT: Stage 0 with cache, then rollback ===
-        x = model.tok_emb(last_token)
-        freqs = model.freqs_cis[cache_pos : cache_pos + 1]
-        for li in range(lps):
-            x = model.blocks[li](x, freqs, kv_caches[li])
-        draft_logits, _, _ = model.exit_heads[0](x)
-        draft_token = torch.argmax(draft_logits[:, -1, :], dim=-1, keepdim=True)
-        
-        # Rollback Stage 0 caches (verify will redo this)
-        for li in range(lps):
-            kv_caches[li].rollback(cache_pos)
-        
-        # === VERIFY ===
-        verify_ids = torch.cat([last_token, draft_token], dim=1)
-        if use_early_exit:
-            full_logits = verify_early_exit(model, verify_ids, kv_caches)
+    for _ in range(gen_len):
+        if kv_caches[0].seq_len > 0:
+            idx_cond = idx[:, -1:]
         else:
-            full_logits, _, _ = model(verify_ids, kv_caches=kv_caches)
-        
-        true_next = torch.argmax(full_logits[:, 0, :], dim=-1, keepdim=True)
-        
-        if true_next.item() == draft_token.item():
-            accepted += 1
-            bonus = torch.argmax(full_logits[:, 1, :], dim=-1, keepdim=True)
-            idx = torch.cat([idx, draft_token, bonus], dim=1)
-            generated += 2
+            idx_cond = idx
+            
+        if halt_threshold is None:
+            logits, _, _ = model(idx_cond, kv_caches=kv_caches)
         else:
-            for cache in kv_caches:
-                cache.rollback(cache_pos + 1)
-            idx = torch.cat([idx, true_next], dim=1)
-            generated += 1
-    
-    return idx, accepted, generated
-
+            # Reimplement adaptive depth for benchmark baseline
+            x = model.tok_emb(idx_cond)
+            is_cached = kv_caches[0].seq_len > 0
+            if not is_cached:
+                sinks = model.sink_tokens.expand(1, -1, -1)
+                x = torch.cat([sinks, x], dim=1)
+            
+            start = kv_caches[0].seq_len if is_cached else 0
+            freqs = model.freqs_cis[start : start + x.shape[1]]
+            
+            logits = None
+            for stage_idx in range(model.config.n_stage):
+                s = stage_idx * model.layers_per_stage
+                e = s + model.layers_per_stage
+                for li in range(s, e):
+                    x = model.blocks[li](x, freqs, kv_caches[li])
+                
+                if stage_idx < model.config.n_stage - 1:
+                    h_real = x if is_cached else x[:, model.config.n_sinks:, :]
+                    out_logits, conf, _ = model.exit_heads[stage_idx](h_real)
+                    if conf[:, -1].item() > halt_threshold:
+                        for rem in range(e, model.config.n_layer):
+                            model.blocks[rem].update_cache_only(x, freqs, kv_caches[rem])
+                        logits = out_logits
+                        break
+            if logits is None:
+                h_real = x if is_cached else x[:, model.config.n_sinks:, :]
+                logits = model.output(model.norm(h_real))
+                
+        idx_next = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        idx = torch.cat([idx, idx_next], dim=1)
+        
+    return idx
 
 @torch.no_grad()
 def benchmark(model, config, device, gen_len=100):
@@ -126,41 +117,39 @@ def benchmark(model, config, device, gen_len=100):
     
     # Warmup
     print("Warming up...", end=" ", flush=True)
-    model.generate(prompt.clone(), 5, use_cache=True, halt_threshold=None)
-    model.generate(prompt.clone(), 5, use_cache=True, halt_threshold=0.5)
+    baseline_generate(model, prompt.clone(), 5, halt_threshold=None)
+    model.generate(prompt.clone(), 5, halt_threshold=0.5)
     print("done.\n")
     
     # ---- 1. Baseline: Full Depth ----
     sync()
     t0 = time.perf_counter()
-    model.generate(prompt.clone(), gen_len, use_cache=True, halt_threshold=None)
+    baseline_generate(model, prompt.clone(), gen_len, halt_threshold=None)
     sync()
     t_baseline = time.perf_counter() - t0
     
     # ---- 2. Early Exit Only ----
     sync()
     t0 = time.perf_counter()
-    model.generate(prompt.clone(), gen_len, use_cache=True, halt_threshold=0.5)
+    baseline_generate(model, prompt.clone(), gen_len, halt_threshold=0.5)
     sync()
     t_early = time.perf_counter() - t0
     
     # ---- 3. Self-Speculative Only (full depth verify) ----
     sync()
     t0 = time.perf_counter()
-    _, acc_spec, gen_spec = speculative_generate(
-        model, prompt.clone(), gen_len, device, use_early_exit=False
-    )
+    out = model.generate(prompt.clone(), gen_len, halt_threshold=None)
     sync()
     t_spec = time.perf_counter() - t0
+    gen_spec = out.shape[1] - prompt.shape[1]
     
-    # ---- 4. Combined: Self-Speculative + Early Exit verify ----
+    # ---- 4. Combined: Self-Spec + Early Exit verify ----
     sync()
     t0 = time.perf_counter()
-    _, acc_comb, gen_comb = speculative_generate(
-        model, prompt.clone(), gen_len, device, use_early_exit=True
-    )
+    out = model.generate(prompt.clone(), gen_len, halt_threshold=0.5)
     sync()
     t_comb = time.perf_counter() - t0
+    gen_comb = out.shape[1] - prompt.shape[1]
     
     # ---- Results ----
     tps_baseline = gen_len / t_baseline
@@ -168,12 +157,12 @@ def benchmark(model, config, device, gen_len=100):
     tps_spec     = gen_spec / t_spec
     tps_comb     = gen_comb / t_comb
     
-    print(f"{'Method':<40} {'tok/s':>8} {'Speedup':>8} {'Accepted':>10}")
-    print("-" * 70)
-    print(f"{'1. Baseline (Full Depth)':<40} {tps_baseline:>8.1f} {1.0:>8.2f}x {'—':>10}")
-    print(f"{'2. Early Exit Only':<40} {tps_early:>8.1f} {tps_early/tps_baseline:>8.2f}x {'—':>10}")
-    print(f"{'3. Self-Speculative Only':<40} {tps_spec:>8.1f} {tps_spec/tps_baseline:>8.2f}x {f'{acc_spec}/{gen_spec}':>10}")
-    print(f"{'4. Self-Spec + Early Exit':<40} {tps_comb:>8.1f} {tps_comb/tps_baseline:>8.2f}x {f'{acc_comb}/{gen_comb}':>10}")
+    print(f"{'Method':<40} {'tok/s':>8} {'Speedup':>8}")
+    print("-" * 60)
+    print(f"{'1. Baseline (Full Depth)':<40} {tps_baseline:>8.1f} {1.0:>8.2f}x")
+    print(f"{'2. Early Exit Only':<40} {tps_early:>8.1f} {tps_early/tps_baseline:>8.2f}x")
+    print(f"{'3. Self-Speculative Only':<40} {tps_spec:>8.1f} {tps_spec/tps_baseline:>8.2f}x")
+    print(f"{'4. Self-Spec + Early Exit':<40} {tps_comb:>8.1f} {tps_comb/tps_baseline:>8.2f}x")
 
 
 if __name__ == '__main__':

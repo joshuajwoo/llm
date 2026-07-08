@@ -39,7 +39,7 @@ def main():
     tokenizer = BPETokenizer(vocab_size=cfg.vocab_size)
     tokenizer.load("data/tokenizer")
     
-    print("\n--- Waypoint Interactive Generator ---")
+    print("\n")
     print("Type 'quit' to exit.")
     
     while True:
@@ -47,7 +47,7 @@ def main():
         if prompt_text.lower() == 'quit':
             break
             
-        threshold_str = input("Halt Threshold (e.g., 0.8) [Leave blank for full depth]: ")
+        threshold_str = input("Halt Threshold (Leave blank for full depth): ")
         if threshold_str.strip() == "":
             halt_threshold = None
         else:

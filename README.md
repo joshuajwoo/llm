@@ -2,36 +2,27 @@
 
 This repository contains an experimental Large Language Model architecture built from scratch in PyTorch, designed to investigate inference efficiency through a combination of **Early Exiting** and **Self-Speculative Decoding**.
 
-## 🚀 Key Innovations
+## 🚀 Model Architecture
 
-### 1. Early Exiting (Adaptive Depth)
-Standard LLMs run every token through every layer. This project attaches "Exit Heads" at intermediate stages of the network. If an early stage is highly confident in its prediction (e.g., predicting a common word like "the"), the model halts computation and outputs the token immediately, skipping the remaining layers.
+The `generate.py` script natively implements the following unified pipeline:
 
-### 2. Self-Speculative Decoding
-Traditional speculative decoding requires a separate, smaller "draft" model. This project implements **Self-Speculation** using Stage 0 (the first few layers of the main model) to act as the draft model. 
-- **Drafting**: Stage 0 rapidly predicts the next token.
-- **Verification**: The full model verifies the draft while simultaneously predicting the *next* token.
-- **Result**: If accepted, the model outputs 2 tokens in a single step, overcoming memory bandwidth bottlenecks.
-
-### 3. Combined: Speculative + Early Exit Verification
-A core feature of this architecture: Stage 0 drafts a token, and the verifier runs stage-by-stage. If the verifier becomes confident early, it exits, verifying the draft *without* running the full depth of the network. This yields massive speedups (e.g., 1.85x over baseline).
-
-### 4. Advanced Architecture Details
-- **Differential Attention**: Enhances multi-head attention by subtracting attention scores, reducing noise and focusing on critical context.
-- **Multi-Token Prediction (MTP)**: Auxiliary loss during training forces exit heads to predict the next token *and* the token after that, encouraging deeper feature extraction earlier in the network.
-- **KV Cache Rollback**: Custom KV cache implementation that supports instant rollbacks for rejected speculative drafts.
-- **Custom BPE Tokenizer**: Built from scratch using the `regex` and `collections` libraries.
+1. **Self-Speculative Drafting**: Stage 0 (the first few layers of the model) acts as an internal draft model, rapidly predicting the next token.
+2. **Rejection Sampling**: Instead of greedy decoding, the model uses Rejection Sampling to mathematically align the probability distributions of the draft and verifier models. This guarantees coherent text generation while preserving the speculative speedup.
+3. **Early Exit Verification**: When verifying the draft, the model evaluates its confidence stage-by-stage. If a `halt_threshold` is provided and the verifier becomes confident early, it halts computation and verifies the draft *without* running the full depth of the network.
+4. **Differential Attention**: Enhances multi-head attention by subtracting attention scores, reducing noise and focusing on critical context.
+5. **Multi-Token Prediction (MTP)**: Auxiliary loss during training forces the exit heads to predict the next token *and* the token after that, forcing the early layers to become smarter faster.
+6. **KV Cache Rollback**: Custom KV cache implementation that supports instant rollbacks for rejected speculative drafts.
 
 ## 📊 Benchmarks
 
-Run `benchmark_architecture.py` to see the real-world impact. Example results on a 100M parameter model:
+Run `benchmark.py` to see the real-world impact. Example results on a 100M parameter model:
 
 | Method | Speedup | How it works |
 |--------|---------|--------------|
 | **1. Baseline** | 1.00x | Full depth, standard autoregressive generation |
-| **2. Early Exit** | 1.48x | Stops at early stages when confident |
-| **3. Self-Speculative** | 1.22x | Stage 0 drafts, Full Model verifies |
-| **4. Combined** | **1.85x** | Stage 0 drafts, Early Exit verifies |
+| **2. Early Exit** | 1.51x | Stops at early stages when confident |
+| **3. Self-Speculative** | 1.37x | Stage 0 drafts, Full Model verifies |
+| **4. Combined** | 2.29x | Stage 0 drafts, Early Exit verifies |
 
 *(Note: Speculative speedups scale significantly with larger parameter counts and longer training)*
 
@@ -53,19 +44,25 @@ python train.py
 ```bash
 python generate.py
 ```
-*Chat with the model. You can manually adjust the `halt_threshold` to see how Early Exiting affects speed and output quality.*
+*Chat with the model. **This script natively uses the highly-optimized Self-Speculative Sampling engine by default.** You can also manually adjust the `halt_threshold` to enable Early Exiting on top of it.*
 
 ### 4. Run Benchmarks
 ```bash
-python benchmark_architecture.py
+python benchmark.py
 ```
+*Tests all four generation configurations side-by-side to measure authentic token-per-second speedups.*
 
 ## 🧠 File Structure
 
-- `model.py` — The core Transformer, Differential Attention, Exit Heads, and KV Cache.
+- `model.py` — The core Transformer, Differential Attention, Exit Heads, KV Cache, and Speculative Sampling engine.
 - `config.py` — Hyperparameters and model configuration.
 - `train.py` — Training loop with loss weighting across multiple exit stages.
-- `generate.py` — Interactive CLI for text generation.
-- `benchmark_architecture.py` — Inference speed benchmarking.
-- `speculative.py` — Implementation of the speculative decoding loops.
+- `generate.py` — Interactive CLI for text generation (defaults to Speculative Sampling).
+- `benchmark.py` — Inference speed benchmarking.
+- `speculative.py` — An interactive, educational demo script breaking down how Self-Speculative decoding works step-by-step.
 - `tokenizer.py` — Custom Byte-Pair Encoding (BPE) implementation.
+- `pack_data.py` — Converts the raw text dataset into efficient `.pt` tensors for training.
+- `scrape.py` — Utility script to scrape text data from the web.
+- `test_model.py` & `test_overfit.py` — Smoke tests and mathematical sanity checks for the architecture.
+- `data/` — Directory containing the datasets, tokenizer vocab, and trained `.pt` checkpoints.
+- `.gitignore` — Filters out large checkpoint files and system caches from source control.

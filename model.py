@@ -531,91 +531,99 @@ class Transformer(nn.Module):
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0,
                  use_cache=True, halt_threshold=None):
-        """Autoregressive generation with optional early exit.
-
+        """Autoregressive generation using Self-Speculative Sampling.
+        
         Args:
             idx:            (1, prompt_len) token indices
             max_new_tokens: number of tokens to generate
-            temperature:    sampling temperature (1.0 = no change)
-            use_cache:      use KV cache for O(1) per-token generation
-            halt_threshold: if None, run full depth (all stages).
-                           if float (e.g. 0.9), exit early when any
-                           checkpoint's confidence exceeds the threshold.
+            temperature:    sampling temperature (e.g. 0.8)
+            use_cache:      must be True for speculative decoding
+            halt_threshold: if provided, uses early exit during the verification step
         Returns:
             idx: (1, prompt_len + generated) full sequence
         """
-        kv_caches = self.create_kv_caches(
-            batch_size=idx.shape[0], device=idx.device
-        ) if use_cache else None
-
-        for _ in range(max_new_tokens):
-            if kv_caches is not None and kv_caches[0].seq_len > 0:
-                idx_cond = idx[:, -1:]
-            else:
-                # Clip to context window
-                idx_cond = idx if idx.shape[1] <= self.config.block_size else \
-                           idx[:, -self.config.block_size:]
-
-            if halt_threshold is None:
-                # Full depth: use standard forward (all stages)
-                logits, _, _ = self(idx_cond, kv_caches=kv_caches)
-                logits = logits[:, -1, :] / temperature
-            else:
-                # Adaptive depth: run stage-by-stage, exit early
-                logits = self._generate_adaptive(
-                    idx_cond, kv_caches, temperature, halt_threshold
-                )
-
-            probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinomial(probs, num_samples=1)  # (1, 1)
-            idx = torch.cat([idx, idx_next], dim=1)
-
-        return idx
-
-    def _generate_adaptive(self, idx, kv_caches, temperature, halt_threshold):
-        """Run stage-by-stage and exit early when confident.
-
-        Returns logits for the last position: (B, vocab_size)
-        """
-        B, T = idx.shape
-
-        # Embed
-        x = self.tok_emb(idx)
-        is_cached_step = kv_caches is not None and kv_caches[0].seq_len > 0
+        device = idx.device
+        kv_caches = self.create_kv_caches(batch_size=idx.shape[0], device=device)
+        lps = self.layers_per_stage
         
-        # Prepend sinks only on first step
-        if not is_cached_step:
-            sinks = self.sink_tokens.expand(B, -1, -1)
-            x = torch.cat([sinks, x], dim=1)
-
-        # RoPE
-        if is_cached_step:
-            start = kv_caches[0].seq_len
-            freqs = self.freqs_cis[start : start + x.shape[1]]
-        else:
-            freqs = self.freqs_cis[: x.shape[1]]
-
-        for stage_idx in range(self.config.n_stage):
-            start_layer = stage_idx * self.layers_per_stage
-            end_layer = start_layer + self.layers_per_stage
-
-            for layer_idx in range(start_layer, end_layer):
-                cache = kv_caches[layer_idx] if kv_caches else None
-                x = self.blocks[layer_idx](x, freqs, cache)
-
-            # Check exit (all but last stage)
-            if stage_idx < self.config.n_stage - 1:
-                h_real = x if is_cached_step else x[:, self.config.n_sinks :, :]
-                logits, confidence, _ = self.exit_heads[stage_idx](h_real)
-                # Check confidence of the LAST token (the one being generated)
-                if confidence[:, -1].item() > halt_threshold:
-                    if kv_caches is not None:
-                        # State propagation: quickly update the remaining layers' caches
-                        for rem_layer in range(layer_idx + 1, self.config.n_layer):
-                            self.blocks[rem_layer].update_cache_only(x, freqs, kv_caches[rem_layer])
-                    return logits[:, -1, :] / temperature
-
-        # Final stage
-        h_real = x if is_cached_step else x[:, self.config.n_sinks :, :]
-        final_logits = self.output(self.norm(h_real))
-        return final_logits[:, -1, :] / temperature
+        # Warm cache with prompt
+        logits, _, _ = self(idx, kv_caches=kv_caches)
+        probs = F.softmax(logits[:, -1, :] / temperature, dim=-1)
+        first_token = torch.multinomial(probs, num_samples=1)
+        idx = torch.cat([idx, first_token], dim=1)
+        generated = 1
+        
+        while generated < max_new_tokens:
+            cache_pos = kv_caches[0].seq_len
+            last_token = idx[:, -1:]
+            
+            # === DRAFT: Stage 0 with cache, then rollback ===
+            x = self.tok_emb(last_token)
+            freqs = self.freqs_cis[cache_pos : cache_pos + 1]
+            for li in range(lps):
+                x = self.blocks[li](x, freqs, kv_caches[li])
+            draft_logits, _, _ = self.exit_heads[0](x)
+            
+            # Draft Sampling
+            draft_probs = F.softmax(draft_logits[:, -1, :] / temperature, dim=-1)
+            draft_token = torch.multinomial(draft_probs, num_samples=1)
+            
+            # Rollback Stage 0 caches (verify will redo this)
+            for li in range(lps):
+                kv_caches[li].rollback(cache_pos)
+            
+            # === VERIFY ===
+            verify_ids = torch.cat([last_token, draft_token], dim=1)
+            
+            if halt_threshold is not None:
+                # Early Exit Verification
+                x = self.tok_emb(verify_ids)
+                start = kv_caches[0].seq_len
+                freqs = self.freqs_cis[start : start + x.shape[1]]
+                
+                full_logits = None
+                for stage_idx in range(self.config.n_stage):
+                    s = stage_idx * self.layers_per_stage
+                    e = s + self.layers_per_stage
+                    for li in range(s, e):
+                        x = self.blocks[li](x, freqs, kv_caches[li])
+                    
+                    if stage_idx < self.config.n_stage - 1:
+                        logits, confidence, _ = self.exit_heads[stage_idx](x)
+                        if confidence[:, -1].item() > halt_threshold:
+                            for rem in range(e, self.config.n_layer):
+                                self.blocks[rem].update_cache_only(x, freqs, kv_caches[rem])
+                            full_logits = logits
+                            break
+                if full_logits is None:
+                    full_logits = self.output(self.norm(x))
+            else:
+                # Full depth verification
+                full_logits, _, _ = self(verify_ids, kv_caches=kv_caches)
+            
+            # Verify probabilities
+            verify_probs = F.softmax(full_logits[:, 0, :] / temperature, dim=-1)
+            
+            # Calculate acceptance probability
+            p = verify_probs[0, draft_token[0, 0]]
+            q = draft_probs[0, draft_token[0, 0]]
+            
+            r = torch.rand(1, device=device).item()
+            if r < (p / q).item():
+                # ACCEPT
+                bonus_probs = F.softmax(full_logits[:, 1, :] / temperature, dim=-1)
+                bonus = torch.multinomial(bonus_probs, num_samples=1)
+                idx = torch.cat([idx, draft_token, bonus], dim=1)
+                generated += 2
+            else:
+                # REJECT: Resample from max(0, p(x) - q(x))
+                new_probs = torch.clamp(verify_probs - draft_probs, min=0.0)
+                new_probs = new_probs / new_probs.sum(dim=-1, keepdim=True)
+                true_next = torch.multinomial(new_probs, num_samples=1)
+                
+                for cache in kv_caches:
+                    cache.rollback(cache_pos + 1)
+                idx = torch.cat([idx, true_next], dim=1)
+                generated += 1
+                
+        return idx
