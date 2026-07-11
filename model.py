@@ -203,58 +203,56 @@ class DifferentialAttention(nn.Module):
     def forward(self, x, freqs_cis, kv_cache=None):
         B, T, _ = x.shape
 
-        # 1. Project Q, K, V → (B, n_head, T, head_dim)
+        # Project Q, K, V → (B, n_head, T, head_dim)
         q = self.wq(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         k = self.wk(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = self.wv(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
 
-        # 2. Split Q, K into sub-heads for the two attention maps
+        # Split Q, K into sub-heads for the two attention maps
         q1, q2 = q.chunk(2, dim=-1)  # each (B, n_head, T, sub_head_dim)
         k1, k2 = k.chunk(2, dim=-1)
 
-        # 3. Apply RoPE to both sub-head pairs
+        # Apply RoPE to both sub-head pairs
         q1, k1 = apply_rotary_emb(q1, k1, freqs_cis)
         q2, k2 = apply_rotary_emb(q2, k2, freqs_cis)
 
-        # 4. Reconstruct full K for caching, then update cache
+        # Reconstruct full K for caching, then update cache
         k_full = torch.cat([k1, k2], dim=-1)  # (B, n_head, T, head_dim)
         if kv_cache is not None:
             k_full, v = kv_cache.update(k_full, v)
             # Re-split the full cached K into sub-heads
             k1, k2 = k_full.chunk(2, dim=-1)
 
-        # 5. Compute two attention maps
+        # Compute two attention maps
         T_q, T_kv = q1.shape[2], k1.shape[2]
-        scale = self.sub_head_dim ** -0.5
-        att1 = (q1 @ k1.transpose(-2, -1)) * scale  # (B, n_head, T_q, T_kv)
-        att2 = (q2 @ k2.transpose(-2, -1)) * scale
+        att1 = (q1 @ k1.transpose(-2, -1)) / (self.sub_head_dim ** 0.5)  # (B, n_head, T_q, T_kv)
+        att2 = (q2 @ k2.transpose(-2, -1)) / (self.sub_head_dim ** 0.5)
 
-        # 6. Apply mask (causal + local window + sink exemption)
+        # Apply mask (causal + local window + sink exemption)
         mask = self._build_mask(T_q, T_kv, x.device)
         if mask is not None:
             att1 = att1.masked_fill(mask, float('-inf'))
             att2 = att2.masked_fill(mask, float('-inf'))
 
-        # 7. Softmax both maps independently
+        # Softmax both maps
         att1 = self.attn_dropout(F.softmax(att1, dim=-1))
         att2 = self.attn_dropout(F.softmax(att2, dim=-1))
 
-        # 8. Compute λ (reparameterized for stability)
+        # Compute lambda (reparameterized for stability)
         lambda_val = (
             torch.exp(self.lambda_q1 @ self.lambda_k1)
             - torch.exp(self.lambda_q2 @ self.lambda_k2)
             + self.lambda_init
         )
 
-        # 9. Differential attention: subtract and apply to values
-        # (A₁ − λ·A₂) can be negative — this is the feature, not a bug.
-        # Negative weights actively suppress distractors.
+        # Differential attention: subtract and apply to values
+        # (A_1 − lambda*A_2) can be negative to suppress distractors.
         out = (att1 - lambda_val * att2) @ v  # (B, n_head, T_q, head_dim)
 
-        # 10. Per-head norm + scaling (DIFF Transformer V1)
+        # Per-head norm + scaling (DIFF Transformer V1)
         out = self.head_norm(out) * (1 - self.lambda_init)
 
-        # 11. Reshape and output projection
+        # Reshape and output projection
         out = out.transpose(1, 2).contiguous().view(B, T_q, -1)
         return self.resid_dropout(self.wo(out))
 

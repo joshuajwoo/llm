@@ -9,9 +9,10 @@ The `generate.py` script natively implements the following unified pipeline:
 1. **Self-Speculative Drafting**: Stage 0 (the first few layers of the model) acts as an internal draft model, rapidly predicting the next token.
 2. **Rejection Sampling**: Instead of greedy decoding, the model uses Rejection Sampling to mathematically align the probability distributions of the draft and verifier models. This guarantees coherent text generation while preserving the speculative speedup.
 3. **Early Exit Verification**: When verifying the draft, the model evaluates its confidence stage-by-stage. If a `halt_threshold` is provided and the verifier becomes confident early, it halts computation and verifies the draft *without* running the full depth of the network.
-4. **Differential Attention**: Enhances multi-head attention by subtracting attention scores, reducing noise and focusing on critical context.
-5. **Multi-Token Prediction (MTP)**: Auxiliary loss during training forces the exit heads to predict the next token *and* the token after that, forcing the early layers to become smarter faster.
-6. **KV Cache Rollback**: Custom KV cache implementation that supports instant rollbacks for rejected speculative drafts.
+4. **Differential Attention**: Enhances multi-head attention by subtracting two attention maps, canceling background noise and focusing on critical context.
+5. **Hybrid Sliding Window**: Within each stage, the first layers use local attention (256-token window + 4 learned sink tokens) for efficiency, while the last layer uses full causal attention for long-range coherence.
+6. **Multi-Token Prediction (MTP)**: Auxiliary loss during training forces the exit heads to predict the next token *and* the token after that, forcing the early layers to become smarter faster.
+7. **KV Cache Rollback**: Custom KV cache implementation that supports instant rollbacks for rejected speculative drafts.
 
 ## 📊 Benchmarks
 
@@ -32,13 +33,13 @@ Run `benchmark.py` to see the real-world impact. Example results on a 100M param
 ```bash
 python tokenizer.py
 ```
-*Trains on the text dataset and generates `data/tokenizer.json` and `data/tokenizer.vocab`.*
+*Trains on the text dataset and generates `data/tokenizer.merges`.*
 
 ### 2. Train the Model
 ```bash
 python train.py
 ```
-*Trains the model using cross-entropy and MTP loss. Checkpoints are saved to `data/checkpoint.pt`.*
+*Trains the model using cross-entropy and MTP loss. Checkpoints are saved to `data/checkpoint.pt` (ignored by git).*
 
 ### 3. Interactive Generation
 ```bash
@@ -64,5 +65,5 @@ python benchmark.py
 - `pack_data.py` — Converts the raw text dataset into efficient `.pt` tensors for training.
 - `scrape.py` — Utility script to scrape text data from the web.
 - `test_model.py` & `test_overfit.py` — Smoke tests and mathematical sanity checks for the architecture.
-- `data/` — Directory containing the datasets, tokenizer vocab, and trained `.pt` checkpoints.
-- `.gitignore` — Filters out large checkpoint files and system caches from source control.
+- `data/` — Local data directory containing the tokenizer merge rules and demo text files. (Large raw text datasets and trained `.pt` checkpoints are hidden by `.gitignore`).
+- `.gitignore` — Filters out large checkpoint files, system caches, and raw datasets from source control.

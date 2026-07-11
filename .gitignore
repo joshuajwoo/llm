@@ -4,6 +4,7 @@ __pycache__/
 
 architecture.md
 pytorch.md
+changes.md
 
 old_models/
 data/*.pt
